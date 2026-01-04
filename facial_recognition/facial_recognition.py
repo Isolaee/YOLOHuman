@@ -9,7 +9,7 @@ import numpy as np
 import onnxruntime as ort
 from insightface.app import FaceAnalysis
 from insightface.model_zoo import get_model
-from typing import List, Tuple, Dict, Optional
+from typing import List, Tuple, Dict, Optional, Any
 import os
 
 class FacialRecognition:
@@ -43,7 +43,7 @@ class FacialRecognition:
     def extract_face_from_yolo_box(self,
                                    image: np.ndarray,
                                    yolo_box: Tuple[int, int, int, int],
-                                padding: float = 0.2) -> Optional[np.ndarray]:
+                                   padding: float = 0.2) -> Optional[np.ndarray]:
         """
         Extract face region from YOLO person/face bounding box.
         
@@ -70,7 +70,39 @@ class FacialRecognition:
         y2 = min(h, y2 + pad_h)
         
         return image[y1:y2, x1:x2]
-    
+
+    def get_faces_from_crop(self, face_crop: np.ndarray) -> List[Any]:
+        """
+        Get all detected faces from a cropped image.
+        
+        Args:
+            face_crop: Cropped face image (BGR format)
+            
+        Returns:
+            List of InsightFace face objects with all attributes
+        """
+        if face_crop is None or face_crop.size == 0:
+            return []
+        return self.app.get(face_crop)
+
+    def get_faces_from_yolo_detection(self,
+                                      image: np.ndarray,
+                                      yolo_box: Tuple[int, int, int, int],
+                                      padding: float = 0.2) -> List[Any]:
+        """
+        Get all faces from a YOLO detection box.
+        
+        Args:
+            image: Full image (BGR format)
+            yolo_box: YOLO coordinates (x1, y1, x2, y2)
+            padding: Padding ratio
+            
+        Returns:
+            List of InsightFace face objects
+        """
+        crop = self.extract_face_from_yolo_box(image, yolo_box, padding)
+        return self.get_faces_from_crop(crop)
+
     def get_embedding_from_crop(self, face_crop: np.ndarray) -> Optional[np.ndarray]:
         """
         Get face embedding from a cropped image using InsightFace.
@@ -81,8 +113,7 @@ class FacialRecognition:
         Returns:
             512-dimensional face embedding or None if no face detected
         """
-        # Run InsightFace on the crop
-        faces = self.app.get(face_crop)
+        faces = self.get_faces_from_crop(face_crop)
         
         if len(faces) == 0:
             return None
