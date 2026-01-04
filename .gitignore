@@ -1,0 +1,45 @@
+# Virtual Environment
+YOLOHuman/
+venv/
+.venv/
+test/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# YOLO outputs
+runs/
+*.pt
+!model/YOLOv8-HumanDetection/best.pt
+!model/YOLOv8-HumanDetection/last.pt
+
+# Test results
+test/img/result*.jpg
+
+# Environment variables
+.env
+.env.local
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
