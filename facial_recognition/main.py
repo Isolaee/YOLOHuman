@@ -5,11 +5,13 @@ Main module connecting person detection, facial recognition, and face feature an
 
 import cv2
 import os
+import numpy as np
 from typing import List, Dict, Any, Optional
 
 from .persons import detect_humans, detect_humans_batch, IMAGE_FOLDER_PATH
 from .facial_recognition import FacialRecognition
 from .face_features import FaceFeatures
+from .face_matches import FaceMatcher, PersonCluster
 
 
 class PersonFaceAnalyzer:
@@ -235,6 +237,192 @@ class PersonFaceAnalyzer:
                     print(f"    Embedding: {face['embedding'].shape} dimensional")
 
 
+def visualize_matches(clusters: List[PersonCluster], 
+                      all_results: Dict[str, List[Dict]],
+                      face_size: int = 120,
+                      max_faces_per_row: int = 8) -> np.ndarray:
+    """
+    Create a visual representation of face matches.
+    
+    Args:
+        clusters: List of PersonCluster objects
+        all_results: Analysis results with crops
+        face_size: Size to resize face thumbnails
+        max_faces_per_row: Maximum faces per row
+        
+    Returns:
+        Visualization image
+    """
+    # Build lookup for person crops
+    crops_lookup = {}
+    for image_path, persons in all_results.items():
+        for person in persons:
+            key = f"{image_path}:p{person['person_id']}"
+            crops_lookup[key] = person['crop']
+    
+    # Calculate layout
+    rows = []
+    colors = [
+        (0, 255, 0),    # Green
+        (255, 0, 0),    # Blue
+        (0, 0, 255),    # Red
+        (255, 255, 0),  # Cyan
+        (255, 0, 255),  # Magenta
+        (0, 255, 255),  # Yellow
+        (128, 0, 255),  # Purple
+        (255, 128, 0),  # Orange
+    ]
+    
+    for cluster_idx, cluster in enumerate(clusters):
+        color = colors[cluster_idx % len(colors)]
+        summary = cluster.get_summary()
+        
+        # Create header for this cluster
+        header_height = 40
+        num_faces = len(cluster.faces)
+        row_width = min(num_faces, max_faces_per_row) * (face_size + 10) + 20
+        row_width = max(row_width, 400)
+        
+        # Create rows of faces for this cluster
+        face_rows = []
+        current_row = []
+        
+        for face in cluster.faces:
+            # Get the crop
+            crop_key = f"{face.image_path}:p{face.person_id}"
+            crop = crops_lookup.get(crop_key)
+            
+            if crop is None:
+                continue
+            
+            # Extract face region from crop if available
+            if face.features.get('bbox'):
+                fx1, fy1, fx2, fy2 = map(int, face.features['bbox'])
+                # Add padding
+                h, w = crop.shape[:2]
+                pad = 20
+                fx1, fy1 = max(0, fx1 - pad), max(0, fy1 - pad)
+                fx2, fy2 = min(w, fx2 + pad), min(h, fy2 + pad)
+                face_img = crop[fy1:fy2, fx1:fx2]
+            else:
+                # Use top portion of person crop as face
+                h, w = crop.shape[:2]
+                face_img = crop[0:min(h, int(h*0.4)), :]
+            
+            # Resize to thumbnail
+            if face_img.size > 0:
+                face_img = cv2.resize(face_img, (face_size, face_size))
+                
+                # Add border with cluster color
+                face_img = cv2.copyMakeBorder(face_img, 3, 3, 3, 3, 
+                                              cv2.BORDER_CONSTANT, value=color)
+                
+                # Add label
+                img_name = os.path.basename(face.image_path)[:15]
+                age = face.features.get('age', '?')
+                cv2.putText(face_img, f"{img_name}", (5, face_size + 2),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 255, 255), 1)
+                
+                current_row.append(face_img)
+                
+                if len(current_row) >= max_faces_per_row:
+                    face_rows.append(current_row)
+                    current_row = []
+        
+        if current_row:
+            face_rows.append(current_row)
+        
+        # Create cluster visualization
+        if face_rows:
+            # Header
+            header = np.zeros((header_height, row_width, 3), dtype=np.uint8)
+            header[:] = (40, 40, 40)
+            
+            title = f"Person {summary['cluster_id']}: {summary['face_count']} face(s) in {summary['image_count']} image(s)"
+            if summary['avg_age'] and summary['gender']:
+                title += f" | {summary['gender']}, ~{summary['avg_age']}yo"
+            
+            cv2.putText(header, title, (10, 28),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+            
+            rows.append(header)
+            
+            # Face rows
+            for face_row in face_rows:
+                row_height = face_size + 20  # Extra space for border
+                row_img = np.zeros((row_height, row_width, 3), dtype=np.uint8)
+                row_img[:] = (30, 30, 30)
+                
+                x_offset = 10
+                for face_img in face_row:
+                    fh, fw = face_img.shape[:2]
+                    y_start = 5
+                    y_end = min(y_start + fh, row_height)
+                    x_end = min(x_offset + fw, row_width)
+                    actual_fh = y_end - y_start
+                    actual_fw = x_end - x_offset
+                    if actual_fh > 0 and actual_fw > 0:
+                        row_img[y_start:y_end, x_offset:x_end] = face_img[:actual_fh, :actual_fw]
+                    x_offset += fw + 10
+                
+                rows.append(row_img)
+            
+            # Add spacing between clusters
+            spacer = np.zeros((10, row_width, 3), dtype=np.uint8)
+            rows.append(spacer)
+    
+    if not rows:
+        # No matches - create placeholder
+        placeholder = np.zeros((100, 400, 3), dtype=np.uint8)
+        cv2.putText(placeholder, "No faces detected", (100, 50),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+        return placeholder
+    
+    # Find max width and create final image
+    max_width = max(r.shape[1] for r in rows)
+    
+    # Pad rows to same width
+    padded_rows = []
+    for row in rows:
+        if row.shape[1] < max_width:
+            pad = np.zeros((row.shape[0], max_width - row.shape[1], 3), dtype=np.uint8)
+            pad[:] = (30, 30, 30)
+            row = np.hstack([row, pad])
+        padded_rows.append(row)
+    
+    return np.vstack(padded_rows)
+
+
+def show_matches_window(clusters: List[PersonCluster],
+                        all_results: Dict[str, List[Dict]],
+                        window_name: str = "Face Matches"):
+    """
+    Show face matches in an OpenCV window.
+    
+    Args:
+        clusters: List of PersonCluster objects
+        all_results: Analysis results
+        window_name: Window title
+    """
+    visualization = visualize_matches(clusters, all_results)
+    
+    # Resize if too large
+    max_height = 900
+    max_width = 1400
+    h, w = visualization.shape[:2]
+    
+    if h > max_height or w > max_width:
+        scale = min(max_height / h, max_width / w)
+        new_w = int(w * scale)
+        new_h = int(h * scale)
+        visualization = cv2.resize(visualization, (new_w, new_h))
+    
+    cv2.imshow(window_name, visualization)
+    print(f"\nVisualization window opened. Press any key to close.")
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
+
+
 def main():
     """Main entry point for testing."""
     print("="*60)
@@ -275,12 +463,56 @@ def main():
     
     # Summary
     print("\n" + "="*60)
-    print("SUMMARY")
+    print("DETECTION SUMMARY")
     print("="*60)
     print(f"Total images processed: {len(all_results)}")
     print(f"Total persons detected: {total_persons}")
     print(f"Total faces analyzed: {total_faces}")
     print(f"Face detection rate: {100*total_faces/total_persons:.1f}%" if total_persons > 0 else "")
+    
+    # Face matching - find same persons across images
+    print("\n" + "="*60)
+    print("FACE MATCHING - FINDING SAME PERSONS")
+    print("="*60)
+    
+    matcher = FaceMatcher(similarity_threshold=0.4)
+    matcher.add_from_results(all_results)
+    
+    print(f"\nTotal faces for matching: {len(matcher.faces)}")
+    
+    # Cluster faces by identity
+    clusters = matcher.cluster_faces()
+    matcher.print_clusters()
+    
+    # Find persons appearing in multiple images
+    print("="*60)
+    print("CROSS-IMAGE MATCHES (Same person in multiple images)")
+    print("="*60)
+    
+    cross_matches = matcher.find_same_person_across_images()
+    
+    if cross_matches:
+        print(f"\nFound {len(cross_matches)} person(s) appearing in multiple images:\n")
+        for cluster in cross_matches:
+            summary = cluster.get_summary()
+            images = [os.path.basename(img) for img in summary['images']]
+            print(f"  Person {summary['cluster_id']}: appears in {summary['image_count']} images")
+            print(f"    Age: ~{summary['avg_age']}, Gender: {summary['gender']}")
+            print(f"    Images: {', '.join(images)}")
+            print()
+    else:
+        print("\nNo persons found appearing in multiple images.")
+    
+    # Show visual representation
+    print("\n" + "="*60)
+    print("VISUAL REPRESENTATION")
+    print("="*60)
+    
+    show_matches_window(clusters, all_results, "Face Matches - Same Persons")
+    
+    print("="*60)
+    print("DONE")
+    print("="*60)
 
 
 if __name__ == "__main__":
